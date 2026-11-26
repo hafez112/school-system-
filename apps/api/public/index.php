@@ -5,6 +5,7 @@ declare(strict_types=1);
 use SchoolSystem\Auth\AuthService;
 use SchoolSystem\Auth\JwtTokens;
 use SchoolSystem\Infrastructure\Database;
+use SchoolSystem\Schools\SchoolService;
 
 require_once __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/../src/Logger.php';
@@ -52,13 +53,9 @@ try {
     }
 
     if ($method === 'POST' && in_array($path, ['/api/v1/auth/logout', '/api/v1/auth/me'], true)) {
-        $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-        if (!preg_match('/^Bearer\s+(.+)$/i', $header, $matches)) {
-            $respond(401, ['success' => false, 'error' => ['code' => 'UNAUTHENTICATED', 'message' => 'A Bearer access token is required.']]);
-        }
-        $claims = $jwt->decode($matches[1]);
+        $claims = bearerClaims($_SERVER['HTTP_AUTHORIZATION'] ?? '', $jwt, $respond);
         $userId = (int) $claims->sub;
-        if ($path === '/api/v1/auth/me' && $method === 'POST') {
+        if ($path === '/api/v1/auth/me') {
             $stmt = $db->prepare('SELECT id, email, full_name, is_active FROM users WHERE id = ?');
             $stmt->execute([$userId]);
             $user = $stmt->fetch();
@@ -71,12 +68,63 @@ try {
         $respond(200, ['success' => true, 'data' => ['message' => 'Logged out.']]);
     }
 
+    if (str_starts_with($path, '/api/v1/schools')) {
+        $claims = bearerClaims($_SERVER['HTTP_AUTHORIZATION'] ?? '', $jwt, $respond);
+        $userId = (int) $claims->sub;
+        [$roles, $permissions] = $auth->accessFor($userId);
+        $schools = new SchoolService($db, $userId, $roles, $permissions);
+        $input = json_decode(file_get_contents('php://input') ?: '', true);
+        if (!is_array($input)) $input = [];
+        $segments = array_values(array_filter(explode('/', trim($path, '/')), static fn (string $part): bool => $part !== ''));
+        $limit = min(100, max(1, (int) ($_GET['limit'] ?? 50)));
+        $offset = max(0, (int) ($_GET['offset'] ?? 0));
+
+        if (count($segments) === 3 && $segments[2] === 'schools' && $method === 'GET') {
+            $respond(200, ['success' => true, 'data' => $schools->listSchools($limit, $offset)]);
+        }
+        if (count($segments) === 3 && $segments[2] === 'schools' && $method === 'POST') {
+            $respond(201, ['success' => true, 'data' => $schools->createSchool($input, $ip)]);
+        }
+        if (count($segments) === 4 && $segments[2] === 'schools' && ctype_digit($segments[3])) {
+            $schoolId = (int) $segments[3];
+            if ($method === 'GET') $respond(200, ['success' => true, 'data' => $schools->getSchool($schoolId)]);
+            if ($method === 'PATCH') $respond(200, ['success' => true, 'data' => $schools->updateSchool($schoolId, $input, $ip)]);
+            if ($method === 'DELETE') {
+                $schools->archiveSchool($schoolId, $ip);
+                $respond(200, ['success' => true, 'data' => ['message' => 'School archived.']]);
+            }
+        }
+        if (count($segments) >= 5 && $segments[2] === 'schools' && ctype_digit($segments[3]) && $segments[4] === 'branches') {
+            $schoolId = (int) $segments[3];
+            if (count($segments) === 5 && $method === 'GET') $respond(200, ['success' => true, 'data' => $schools->listBranches($schoolId, $limit, $offset)]);
+            if (count($segments) === 5 && $method === 'POST') $respond(201, ['success' => true, 'data' => $schools->createBranch($schoolId, $input, $ip)]);
+            if (count($segments) === 6 && ctype_digit($segments[5])) {
+                $branchId = (int) $segments[5];
+                if ($method === 'GET') $respond(200, ['success' => true, 'data' => $schools->getBranch($schoolId, $branchId)]);
+                if ($method === 'PATCH') $respond(200, ['success' => true, 'data' => $schools->updateBranch($schoolId, $branchId, $input, $ip)]);
+                if ($method === 'DELETE') {
+                    $schools->archiveBranch($schoolId, $branchId, $ip);
+                    $respond(200, ['success' => true, 'data' => ['message' => 'Branch archived.']]);
+                }
+            }
+        }
+    }
+
     $respond(404, ['success' => false, 'error' => ['code' => 'NOT_FOUND', 'message' => 'Endpoint not found.']]);
 } catch (RuntimeException $e) {
     $logger->warning($e->getMessage(), ['path' => $_SERVER['REQUEST_URI'] ?? '/']);
-    $status = str_contains(strtolower($e->getMessage()), 'invalid email') || str_contains(strtolower($e->getMessage()), 'refresh token') ? 401 : 400;
-    $respond($status, ['success' => false, 'error' => ['code' => $status === 401 ? 'UNAUTHENTICATED' : 'REQUEST_ERROR', 'message' => $debug ? $e->getMessage() : ($status === 401 ? 'Authentication failed.' : 'The request could not be completed.')]]);
+    $message = strtolower($e->getMessage());
+    $status = str_contains($message, 'forbidden') ? 403 : (str_contains($message, 'not found') ? 404 : (str_contains($message, 'invalid email') || str_contains($message, 'refresh token') || str_contains($message, 'unauthenticated') ? 401 : 422));
+    $respond($status, ['success' => false, 'error' => ['code' => match ($status) { 401 => 'UNAUTHENTICATED', 403 => 'FORBIDDEN', 404 => 'NOT_FOUND', default => 'VALIDATION_ERROR' }, 'message' => $debug ? $e->getMessage() : match ($status) { 401 => 'Authentication failed.', 403 => 'You do not have permission to perform this action.', 404 => 'Resource not found.', default => 'The request could not be completed.' }]]);
 } catch (Throwable $e) {
     $logger->error($e->getMessage(), ['exception' => $e::class, 'file' => $e->getFile(), 'line' => $e->getLine()]);
     $respond(500, ['success' => false, 'error' => ['code' => 'INTERNAL_SERVER_ERROR', 'message' => $debug ? $e->getMessage() : 'An unexpected error occurred.']]);
+}
+
+function bearerClaims(string $header, JwtTokens $jwt, callable $respond): object
+{
+    if (!preg_match('/^Bearer\s+(.+)$/i', $header, $matches)) {
+        $respond(401, ['success' => false, 'error' => ['code' => 'UNAUTHENTICATED', 'message' => 'A Bearer access token is required.']]);
+    }
+    return $jwt->decode($matches[1]);
 }
