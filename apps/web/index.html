@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>School System API</title>
+</head>
+<body>
+  <script>
+    fetch('/health')
+      .then(response => response.json())
+      .then(result => document.body.append(document.createTextNode(JSON.stringify(result, null, 2))))
+      .catch(error => document.body.append(document.createTextNode(error.message)));
+  </script>
+</body>
+</html>
