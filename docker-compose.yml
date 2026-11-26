@@ -1,0 +1,42 @@
+services:
+  api:
+    build:
+      context: ./docker/php
+    working_dir: /var/www/html
+    volumes:
+      - ./apps/api:/var/www/html
+      - ./storage/logs:/var/www/storage/logs
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      APP_DEBUG: ${APP_DEBUG:-true}
+      DB_HOST: mysql
+      DB_PORT: ${DB_PORT:-3306}
+      DB_DATABASE: ${DB_DATABASE:-school_system}
+      DB_USERNAME: ${DB_USERNAME:-school}
+      DB_PASSWORD: ${DB_PASSWORD:-school_secret}
+      PHP_TZ: ${PHP_TZ:-Asia/Riyadh}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_secret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-school_system}
+      MYSQL_USER: ${MYSQL_USER:-school}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-school_secret}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./packages/database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root_secret}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  mysql_data:
