@@ -1,19 +1,25 @@
 services:
   api:
     build:
-      context: ./docker/php
+      context: .
+      dockerfile: docker/php/Dockerfile
     working_dir: /var/www/html
     volumes:
       - ./apps/api:/var/www/html
+      - api_vendor:/var/www/html/vendor
       - ./storage/logs:/var/www/storage/logs
     environment:
       APP_ENV: ${APP_ENV:-local}
-      APP_DEBUG: ${APP_DEBUG:-true}
+      APP_DEBUG: ${APP_DEBUG:-false}
       DB_HOST: mysql
       DB_PORT: ${DB_PORT:-3306}
       DB_DATABASE: ${DB_DATABASE:-school_system}
       DB_USERNAME: ${DB_USERNAME:-school}
       DB_PASSWORD: ${DB_PASSWORD:-school_secret}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_ISSUER: ${JWT_ISSUER:-school-system-api}
+      JWT_TTL: ${JWT_TTL:-900}
+      REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-2592000}
       PHP_TZ: ${PHP_TZ:-Asia/Riyadh}
     depends_on:
       mysql:
@@ -40,3 +46,4 @@ services:
       retries: 20
 volumes:
   mysql_data:
+  api_vendor:
